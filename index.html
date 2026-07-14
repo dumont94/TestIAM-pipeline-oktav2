@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HRIS-Driven Identity Lifecycle — Paylocity → Okta → SaaS</title>
+<meta name="description" content="Reference architecture and runbook for an HRIS-driven identity lifecycle pipeline: Paylocity as HR system of record, Okta as identity platform, SCIM provisioning to downstream SaaS apps, GCP as middleware hosting.">
+<style>
+/* ============================================================
+   Token system
+   rail   #101826  dark slate-navy — sidebar, hero diagram, code
+   paper  #ffffff  content surface
+   bg     #eef1f4  page backdrop
+   ink    #1c2430  body text
+   cobalt #2458e6  links, active states, phase identity
+   amber  #92510a  risks & gotchas
+   teal   #0e7466  "done when" / success
+   Type scale (1.25): 13.6 / 17 / 21.25 / 26.5 / 33
+   Signature element: monospace phase chips P0–P4 + dark hero diagram
+   ============================================================ */
+:root{
+  --rail:#101826;
+  --rail-2:#1a2740;
+  --paper:#ffffff;
+  --bg:#eef1f4;
+  --ink:#1c2430;
+  --ink-2:#4b5666;
+  --line:#d8dee6;
+  --cobalt:#2458e6;
+  --cobalt-dark:#1a3fa8;
+  --amber:#92510a;
+  --amber-bg:#fdf6ec;
+  --teal:#0e7466;
+  --teal-bg:#edf7f5;
+  --code-bg:#101826;
+  --code-ink:#d7deea;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:4.5rem}
+@media (prefers-reduced-motion:reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+body{
+  margin:0;background:var(--bg);color:var(--ink);
+  font-family:var(--sans);font-size:17px;line-height:1.65;
+  -webkit-text-size-adjust:100%;
+}
+a{color:var(--cobalt)}
+a:hover{color:var(--cobalt-dark)}
+:focus-visible{outline:3px solid var(--cobalt);outline-offset:2px;border-radius:2px}
+
+/* ---- layout ---- */
+.wrap{display:grid;grid-template-columns:272px minmax(0,1fr);max-width:1200px;margin:0 auto}
+main{background:var(--paper);border-left:1px solid var(--line);border-right:1px solid var(--line);padding:0 clamp(1.1rem,4vw,3rem) 4rem;min-width:0}
+
+/* ---- sidebar ---- */
+nav.side{
+  position:sticky;top:0;align-self:start;height:100vh;overflow-y:auto;
+  background:var(--rail);color:#c4cddc;padding:1.4rem 1rem 2rem;
+}
+nav.side .brand{color:#fff;font-weight:700;font-size:1rem;line-height:1.3;display:block;text-decoration:none;margin-bottom:.15rem}
+nav.side .brand:hover{color:#fff}
+nav.side .sub{font-size:.78rem;color:#8492a8;margin:0 0 1.2rem;line-height:1.45}
+nav.side ul{list-style:none;margin:0;padding:0}
+nav.side li{margin:.1rem 0}
+nav.side a.navlink{
+  display:flex;align-items:center;gap:.55rem;color:#c4cddc;text-decoration:none;
+  padding:.42rem .55rem;border-radius:6px;font-size:.86rem;line-height:1.3;
+  border-left:3px solid transparent;
+}
+nav.side a.navlink:hover{background:var(--rail-2);color:#fff}
+nav.side a.navlink.active{background:var(--rail-2);color:#fff;border-left-color:var(--cobalt)}
+.chip{
+  font-family:var(--mono);font-size:.68rem;font-weight:700;
+  min-width:2.05rem;text-align:center;padding:.14rem .3rem;border-radius:4px;
+  background:#243350;color:#9fb4de;letter-spacing:.02em;flex-shrink:0;
+}
+.chip.ov{background:#243350;color:#9fb4de}
+.chip.sf{background:#123a34;color:#7fd0c2}
+.chip.gl{background:#3a2f14;color:#e0bd7a}
+nav.side .grp{font-size:.68rem;text-transform:uppercase;letter-spacing:.12em;color:#68758c;margin:1.2rem 0 .35rem .55rem}
+
+/* mobile top bar */
+.topbar{display:none}
+@media (max-width:920px){
+  .wrap{grid-template-columns:1fr}
+  nav.side{display:none}
+  .topbar{
+    display:block;position:sticky;top:0;z-index:50;
+    background:var(--rail);color:#fff;
+  }
+  .topbar .bar{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1rem}
+  .topbar .t{font-weight:700;font-size:.95rem}
+  .topbar button{
+    background:var(--rail-2);color:#fff;border:1px solid #33415e;border-radius:6px;
+    font:inherit;font-size:.85rem;padding:.4rem .8rem;cursor:pointer;
+  }
+  .topbar .menu{display:none;border-top:1px solid #2a3752;padding:.5rem .6rem 1rem;max-height:70vh;overflow-y:auto}
+  .topbar .menu.open{display:block}
+  .topbar .menu a{
+    display:flex;align-items:center;gap:.55rem;color:#c4cddc;text-decoration:none;
+    padding:.5rem .6rem;border-radius:6px;font-size:.9rem;
+  }
+  .topbar .menu a:hover{background:var(--rail-2);color:#fff}
+  main{border:none;padding-top:.25rem}
+}
+
+/* ---- typography ---- */
+h1{font-size:2rem;line-height:1.2;margin:2.2rem 0 .6rem;letter-spacing:-.015em}
+h2{font-size:1.56rem;line-height:1.25;margin:0 0 1rem;letter-spacing:-.01em}
+h3{font-size:1.17rem;margin:2rem 0 .6rem}
+p,ul,ol{max-width:70ch}
+li{margin:.3rem 0}
+.lede{font-size:1.05rem;color:var(--ink-2);max-width:70ch}
+section{padding-top:3rem;margin-top:-0.5rem;border-top:1px solid var(--line)}
+section:first-of-type{border-top:none}
+.phase-head{display:flex;align-items:flex-start;gap:.8rem;margin-top:3rem}
+.phase-head .chip{font-size:.85rem;min-width:2.7rem;padding:.3rem .4rem;margin-top:.35rem;background:var(--rail);color:#9fb4de}
+.phase-head h2{margin-bottom:.2rem}
+.phase-head .tag{font-size:.85rem;color:var(--ink-2);margin:0 0 1rem}
+
+/* ---- skeleton labels (Purpose / Inputs / Steps …) ---- */
+.k{
+  font-family:var(--mono);font-size:.72rem;font-weight:700;text-transform:uppercase;
+  letter-spacing:.14em;color:var(--cobalt-dark);
+  border-bottom:2px solid var(--cobalt);display:inline-block;
+  padding-bottom:.15rem;margin:1.9rem 0 .55rem;
+}
+.k.risk{color:var(--amber);border-bottom-color:var(--amber)}
+.k.done{color:var(--teal);border-bottom-color:var(--teal)}
+
+.done-box{background:var(--teal-bg);border:1px solid #bcd9d2;border-left:4px solid var(--teal);border-radius:6px;padding:.8rem 1rem;max-width:70ch}
+.done-box p{margin:.2rem 0}
+.risk-box{background:var(--amber-bg);border:1px solid #ecd9bb;border-left:4px solid var(--amber);border-radius:6px;padding:.8rem 1rem;max-width:70ch}
+.risk-box ul{margin:.3rem 0;padding-left:1.2rem}
+
+/* "Say it out loud" */
+.aloud{
+  max-width:70ch;margin:1rem 0 0;padding:1rem 1.2rem;
+  background:var(--rail);color:#e8edf5;border-radius:8px;position:relative;
+}
+.aloud::before{
+  content:"SAY IT OUT LOUD";font-family:var(--mono);font-size:.66rem;letter-spacing:.16em;
+  color:#8fa5cf;display:block;margin-bottom:.4rem;
+}
+.aloud p{margin:0;font-size:1.02rem;line-height:1.6}
+
+/* Entra bridge callout */
+.entra{
+  max-width:70ch;border:1px dashed #a9b6c8;border-radius:6px;background:#f6f8fb;
+  padding:.65rem .9rem;font-size:.92rem;color:#33405a;margin:.9rem 0;
+}
+.entra b{color:var(--rail)}
+
+/* ---- tables ---- */
+.tblwrap{overflow-x:auto;max-width:100%;margin:.8rem 0}
+table{border-collapse:collapse;font-size:.88rem;min-width:600px}
+th,td{border:1px solid var(--line);padding:.5rem .7rem;text-align:left;vertical-align:top}
+th{background:#f2f5f8;font-size:.78rem;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-2)}
+td code,li code,p code{
+  font-family:var(--mono);font-size:.85em;background:#eef1f6;border:1px solid #dde3ec;
+  border-radius:4px;padding:.05em .35em;color:#243a63;white-space:nowrap;
+}
+
+/* ---- code blocks ---- */
+pre{
+  background:var(--code-bg);color:var(--code-ink);border-radius:8px;
+  padding:1rem 1.1rem;overflow-x:auto;font-size:.82rem;line-height:1.55;
+  max-width:100%;margin:.8rem 0;
+}
+pre code{font-family:var(--mono);background:none;border:none;padding:0;color:inherit;white-space:pre}
+.tok-c{color:#7f8ea8;font-style:italic}
+.tok-s{color:#9fd0a4}
+.tok-k{color:#82aaff}
+.tok-f{color:#e8c58a}
+.codecap{font-family:var(--mono);font-size:.72rem;color:var(--ink-2);margin:.9rem 0 -0.4rem;letter-spacing:.04em}
+
+/* ---- details ---- */
+details{border:1px solid var(--line);border-radius:6px;margin:.8rem 0;max-width:70ch;background:#fafbfc}
+details>summary{
+  cursor:pointer;padding:.6rem .9rem;font-weight:600;font-size:.93rem;list-style:none;
+}
+details>summary::before{content:"▸ ";color:var(--cobalt)}
+details[open]>summary::before{content:"▾ "}
+details>summary::-webkit-details-marker{display:none}
+details>div{padding:0 .9rem .8rem}
+details pre{font-size:.78rem}
+
+/* ---- hero / diagram ---- */
+.hero{padding:2.4rem 0 0}
+.hero .kicker{font-family:var(--mono);font-size:.72rem;letter-spacing:.18em;text-transform:uppercase;color:var(--cobalt-dark)}
+.diagram{
+  background:var(--rail);border-radius:10px;padding:1rem;margin:1.4rem 0 1rem;
+}
+.diagram svg{display:block;width:100%;height:auto}
+figcaption{font-size:.82rem;color:var(--ink-2);max-width:70ch}
+figure{margin:0}
+
+/* glossary */
+dl.gloss{max-width:70ch}
+dl.gloss dt{font-weight:700;margin-top:1rem}
+dl.gloss dt .ee{font-weight:400;font-size:.82rem;color:var(--ink-2);font-family:var(--mono)}
+dl.gloss dd{margin:0.15rem 0 0 0}
+
+/* sources */
+ul.src{padding-left:1.2rem}
+ul.src li{margin:.5rem 0}
+ul.src .why{display:block;font-size:.85rem;color:var(--ink-2)}
+
+footer{padding:2.5rem 0 1rem;color:var(--ink-2);font-size:.85rem;border-top:1px solid var(--line);margin-top:3rem;max-width:70ch}
+.skip{
+  position:absolute;left:-9999px;top:0;background:var(--cobalt);color:#fff;
+  padding:.6rem 1rem;z-index:100;border-radius:0 0 6px 0;
+}
+.skip:focus{left:0;color:#fff}
+</style>
+</head>
+<body>
+<a class="skip" href="#overview">Skip to content</a>
+
+<!-- Mobile top bar -->
+<div class="topbar">
+  <div class="bar">
+    <span class="t">Identity Lifecycle Runbook</span>
+    <button id="menuBtn" aria-expanded="false" aria-controls="mobileMenu">Menu</button>
+  </div>
+  <div class="menu" id="mobileMenu">
+    <a href="#overview"><span class="chip ov">MAP</span> Architecture Overview</a>
+    <a href="#phase0"><span class="chip">P0</span> Discovery &amp; Audit</a>
+    <a href="#phase1"><span class="chip">P1</span> Legacy Reconciliation</a>
+    <a href="#phase2"><span class="chip">P2</span> Joiner Path</a>
+    <a href="#phase3"><span class="chip">P3</span> Mover Path</a>
+    <a href="#phase4"><span class="chip">P4</span> Leaver Path</a>
+    <a href="#safety"><span class="chip sf">SFT</span> Safety Model</a>
+    <a href="#glossary"><span class="chip gl">GLS</span> Glossary</a>
+    <a href="#sources"><span class="chip gl">SRC</span> Sources</a>
+  </div>
+</div>
+
+<div class="wrap">
+
+<!-- Sidebar -->
+<nav class="side" aria-label="Section navigation">
+  <a class="brand" href="#top">HRIS‑Driven Identity Lifecycle</a>
+  <p class="sub">Paylocity → Okta → downstream SaaS.<br>Reference architecture &amp; runbook.</p>
+  <ul>
+    <li><a class="navlink" href="#overview"><span class="chip ov">MAP</span> Architecture Overview</a></li>
+  </ul>
+  <p class="grp">Phases</p>
+  <ul>
+    <li><a class="navlink" href="#phase0"><span class="chip">P0</span> Discovery &amp; Audit</a></li>
+    <li><a class="navlink" href="#phase1"><span class="chip">P1</span> Legacy Reconciliation</a></li>
+    <li><a class="navlink" href="#phase2"><span class="chip">P2</span> Joiner Path</a></li>
+    <li><a class="navlink" href="#phase3"><span class="chip">P3</span> Mover Path</a></li>
+    <li><a class="navlink" href="#phase4"><span class="chip">P4</span> Leaver Path</a></li>
+  </ul>
+  <p class="grp">Reference</p>
+  <ul>
+    <li><a class="navlink" href="#safety"><span class="chip sf">SFT</span> Safety Model</a></li>
+    <li><a class="navlink" href="#glossary"><span class="chip gl">GLS</span> Glossary</a></li>
+    <li><a class="navlink" href="#sources"><span class="chip gl">SRC</span> Sources</a></li>
+  </ul>
+</nav>
+
+<main id="top">
+
+<!-- ================= HERO + OVERVIEW ================= -->
+<div class="hero">
+  <span class="kicker">Reference architecture · Runbook</span>
+  <h1>HRIS‑Driven Identity Lifecycle</h1>
+  <p class="lede">How a mid‑size SaaS company wires its HR system (Paylocity) to its identity platform (Okta) so that hiring, transferring, and terminating an employee in HR automatically creates, adjusts, and removes their access everywhere else — with GCP hosting the glue in the middle. Written for engineers who know Entra ID and endpoint management but are new to Okta’s vocabulary: every identity term is defined the first time it appears.</p>
+</div>
+
+<section id="overview" aria-labelledby="overview-h">
+  <h2 id="overview-h">Architecture Overview</h2>
+
+  <figure>
+    <div class="diagram" role="img" aria-label="Flow diagram: Paylocity feeds Okta, where profile attributes drive group rules, groups, and app assignments. SCIM provisioning flows from Okta to Google Workspace, Atlassian, and Zscaler directly, and to 1Password through a SCIM Bridge hosted on GCP. Jamf manages devices alongside Okta.">
+    <svg viewBox="0 0 980 560" xmlns="http://www.w3.org/2000/svg" font-family="ui-monospace,Menlo,Consolas,monospace">
+      <defs>
+        <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="#7fa3e8"/>
+        </marker>
+      </defs>
+      <!-- Paylocity -->
+      <rect x="20" y="180" width="170" height="90" rx="8" fill="#1a2740" stroke="#3d4f75" stroke-width="1.5"/>
+      <text x="105" y="218" fill="#ffffff" font-size="17" text-anchor="middle" font-weight="bold">Paylocity</text>
+      <text x="105" y="240" fill="#8fa5cf" font-size="11" text-anchor="middle">HR system of record</text>
+      <text x="105" y="256" fill="#8fa5cf" font-size="11" text-anchor="middle">(the source of truth)</text>
+
+      <!-- arrow Paylocity -> Okta -->
+      <line x1="190" y1="225" x2="258" y2="225" stroke="#7fa3e8" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="224" y="212" fill="#9fb4de" font-size="10.5" text-anchor="middle">HR import</text>
+
+      <!-- Okta -->
+      <rect x="262" y="70" width="240" height="310" rx="10" fill="#16233c" stroke="#2458e6" stroke-width="2"/>
+      <text x="382" y="100" fill="#ffffff" font-size="18" text-anchor="middle" font-weight="bold">Okta</text>
+      <text x="382" y="119" fill="#8fa5cf" font-size="11" text-anchor="middle">identity platform (IdP)</text>
+      <!-- inner chain -->
+      <rect x="287" y="136" width="190" height="40" rx="6" fill="#243350"/>
+      <text x="382" y="161" fill="#dce5f5" font-size="12.5" text-anchor="middle">User profile (attributes)</text>
+      <line x1="382" y1="176" x2="382" y2="192" stroke="#7fa3e8" stroke-width="1.6" marker-end="url(#arr)"/>
+      <rect x="287" y="194" width="190" height="40" rx="6" fill="#243350"/>
+      <text x="382" y="219" fill="#dce5f5" font-size="12.5" text-anchor="middle">Group rules</text>
+      <line x1="382" y1="234" x2="382" y2="250" stroke="#7fa3e8" stroke-width="1.6" marker-end="url(#arr)"/>
+      <rect x="287" y="252" width="190" height="40" rx="6" fill="#243350"/>
+      <text x="382" y="277" fill="#dce5f5" font-size="12.5" text-anchor="middle">Groups</text>
+      <line x1="382" y1="292" x2="382" y2="308" stroke="#7fa3e8" stroke-width="1.6" marker-end="url(#arr)"/>
+      <rect x="287" y="310" width="190" height="40" rx="6" fill="#243350"/>
+      <text x="382" y="335" fill="#dce5f5" font-size="12.5" text-anchor="middle">App assignments</text>
+
+      <!-- SCIM arrows out -->
+      <line x1="502" y1="130" x2="662" y2="112" stroke="#7fa3e8" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="502" y1="200" x2="662" y2="197" stroke="#7fa3e8" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="502" y1="270" x2="662" y2="282" stroke="#7fa3e8" stroke-width="2" marker-end="url(#arr)"/>
+      <line x1="502" y1="330" x2="560" y2="392" stroke="#7fa3e8" stroke-width="2" marker-end="url(#arr)"/>
+      <text x="582" y="158" fill="#9fb4de" font-size="11" text-anchor="middle" transform="rotate(-3 582 158)">SCIM provisioning</text>
+
+      <!-- Downstream apps -->
+      <rect x="666" y="86" width="290" height="52" rx="8" fill="#1a2740" stroke="#3d4f75" stroke-width="1.5"/>
+      <text x="811" y="110" fill="#ffffff" font-size="14" text-anchor="middle" font-weight="bold">Google Workspace</text>
+      <text x="811" y="127" fill="#8fa5cf" font-size="10.5" text-anchor="middle">via Admin SDK Directory API</text>
+
+      <rect x="666" y="171" width="290" height="52" rx="8" fill="#1a2740" stroke="#3d4f75" stroke-width="1.5"/>
+      <text x="811" y="195" fill="#ffffff" font-size="14" text-anchor="middle" font-weight="bold">Atlassian</text>
+      <text x="811" y="212" fill="#8fa5cf" font-size="10.5" text-anchor="middle">requires Atlassian Guard</text>
+
+      <rect x="666" y="256" width="290" height="52" rx="8" fill="#1a2740" stroke="#3d4f75" stroke-width="1.5"/>
+      <text x="811" y="280" fill="#ffffff" font-size="14" text-anchor="middle" font-weight="bold">Zscaler</text>
+      <text x="811" y="297" fill="#8fa5cf" font-size="10.5" text-anchor="middle">policy bound to Okta groups</text>
+
+      <!-- GCP middleware box -->
+      <rect x="540" y="376" width="416" height="100" rx="10" fill="none" stroke="#3d4f75" stroke-width="1.5" stroke-dasharray="6 4"/>
+      <text x="560" y="398" fill="#68758c" font-size="10.5">GCP (Cloud Run / GKE) — middleware hosting only</text>
+      <rect x="560" y="408" width="180" height="52" rx="8" fill="#1a2740" stroke="#3d4f75" stroke-width="1.5"/>
+      <text x="650" y="431" fill="#ffffff" font-size="13" text-anchor="middle" font-weight="bold">1Password</text>
+      <text x="650" y="448" fill="#8fa5cf" font-size="10.5" text-anchor="middle">SCIM Bridge (container)</text>
+      <line x1="740" y1="434" x2="800" y2="434" stroke="#7fa3e8" stroke-width="2" marker-end="url(#arr)"/>
+      <rect x="804" y="408" width="136" height="52" rx="8" fill="#1a2740" stroke="#3d4f75" stroke-width="1.5"/>
+      <text x="872" y="438" fill="#ffffff" font-size="13" text-anchor="middle" font-weight="bold">1Password</text>
+
+      <!-- Jamf -->
+      <rect x="80" y="440" width="220" height="70" rx="8" fill="#1a2740" stroke="#3d4f75" stroke-width="1.5"/>
+      <text x="190" y="470" fill="#ffffff" font-size="14" text-anchor="middle" font-weight="bold">Jamf (MDM)</text>
+      <text x="190" y="490" fill="#8fa5cf" font-size="10.5" text-anchor="middle">devices · Jamf Connect ties</text>
+      <text x="190" y="503" fill="#8fa5cf" font-size="10.5" text-anchor="middle">macOS login to Okta</text>
+      <line x1="330" y1="380" x2="240" y2="437" stroke="#7fa3e8" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+      <text x="252" y="404" fill="#9fb4de" font-size="10.5">alongside</text>
+    </svg>
+    </div>
+    <figcaption>The pipeline at a glance. Solid arrows are automated account flows; the dashed arrow marks Jamf managing devices in parallel with (not downstream of) the account pipeline.</figcaption>
+  </figure>
+
+  <p>Read the diagram left to right. <strong>Paylocity</strong> is the HRIS (Human Resources Information System — the HR database where employees are hired, transferred, and terminated) and it acts as the <strong>system of record</strong> (the one authoritative source that every other system copies from, never the other way around). When HR creates or changes a person there, <strong>Okta</strong> — the IdP (Identity Provider — the central login and identity platform; the Okta equivalent of Entra ID) — imports that person and builds a user profile from mapped attributes. <strong>Group rules</strong> (saved expressions that read profile attributes like <code>department</code> and automatically place users into groups — roughly Entra&nbsp;ID dynamic groups) put each user into the right groups; groups carry <strong>app assignments</strong> (which applications a member gets — like assigning users to an enterprise app in Entra); and each assigned app is then provisioned over <strong>SCIM</strong> (System for Cross-domain Identity Management — an open REST standard that lets an identity platform automatically create, update, and deactivate user accounts in other apps; the plumbing that copies a new hire from HR into every downstream tool). Google Workspace, Atlassian, and Zscaler take that feed more or less directly; 1Password cannot, so a small <strong>SCIM Bridge</strong> container hosted on GCP translates in between. <strong>Jamf</strong>, the MDM (Mobile Device Management — remote management of laptops and phones, the Intune of the Apple world), handles the devices those people use, alongside the account pipeline rather than inside it. The chain to memorize: <em>attributes → group rules → group membership → app assignment → SCIM provisioning.</em></p>
+
+  <div class="entra"><b>Entra bridge:</b> if you think in Microsoft terms, this whole page describes the Okta version of “HR-driven provisioning” — the same idea as Entra ID’s HR-sourced provisioning into Active Directory / Entra, with dynamic groups and enterprise-app provisioning downstream. Okta = Entra ID; Okta group rules = dynamic groups; Okta app assignment + SCIM = enterprise app assignment + automatic provisioning; Okta System Log = Entra audit/sign-in logs; Jamf = Intune for Macs.</div>
+</section>
+
+<!-- ================= PHASE 0 ================= -->
+<section id="phase0" aria-labelledby="phase0-h">
+  <div class="phase-head">
+    <span class="chip">P0</span>
+    <div>
+      <h2 id="phase0-h">Phase 0 — Discovery &amp; Current‑State Audit</h2>
+      <p class="tag">Read‑only. Nothing is written to any system in this phase.</p>
+    </div>
+  </div>
+
+  <p class="k">Purpose</p>
+  <p>Before automating anything, learn exactly what exists today. Automation amplifies whatever it finds — clean data becomes clean accounts at scale, and dirty data becomes dirty accounts at scale. Phase 0 is a survey pass with every tool in read-only mode: you inventory the HR side, the Okta side, and every downstream app, and you write down what you find. Nothing is created, changed, or deleted.</p>
+
+  <p class="k">Inputs</p>
+  <ul>
+    <li>Read-only (or reporting) access to Paylocity, Okta, and each downstream app’s admin console.</li>
+    <li>The contract or plan documentation for Paylocity — you specifically need to know the tier, because <strong>Paylocity gates SCIM behind its Enterprise tier</strong>, and SAML (Security Assertion Markup Language — the older, XML-based single sign-on protocol most enterprise apps speak) setup requires contacting Paylocity support; it is not a self-serve toggle.</li>
+    <li>A list of every SaaS app in scope, with owner names.</li>
+  </ul>
+
+  <p class="k">Steps</p>
+  <ol>
+    <li><strong>Audit Paylocity data quality.</strong> Export the employee roster and check attribute cleanliness: does every active employee have an employee ID, a department, a title, a manager, a start date? Blank or inconsistent values here become provisioning failures later. Note Paylocity’s username length restrictions — they can break an email-as-username convention if your emails are long.</li>
+    <li><strong>Classify each downstream app</strong> as (a) supports SCIM natively via the OIN (Okta Integration Network — Okta’s catalog of pre-built app connectors, analogous to the Entra enterprise application gallery), (b) needs glue such as Okta Workflows (Okta’s no-code automation product — think Logic Apps or Power Automate for identity events) or custom middleware, or (c) manual-only.</li>
+    <li><strong>Map the existing Okta group structure.</strong> Which groups exist, which are hand-maintained, which drive app assignments, and which are stale.</li>
+    <li><strong>Count existing users and determine how each was created</strong> — imported, API-created, or hand-typed by an admin years ago. This census is the input to Phase 1.</li>
+    <li><strong>Record every incomplete HR record.</strong> Paylocity provisioning can <em>fail silently</em> when HR-module records are incomplete — the user simply never syncs, and nobody is alerted. An unsynced account that quietly keeps stale access is an audit finding waiting to happen, so the gaps must be on paper before anything runs.</li>
+  </ol>
+
+  <p class="k">Outputs</p>
+  <ul>
+    <li>An <strong>audit document</strong>: app inventory with SCIM capability per app, Okta group map, user census with creation origin.</li>
+    <li>A <strong>data-quality report</strong>: per-attribute completeness percentages from Paylocity, plus a named list of records that would fail to sync.</li>
+  </ul>
+
+  <p class="k done">Done when</p>
+  <div class="done-box"><p>You can answer, without logging into anything: how many users exist, where each came from, which apps can take SCIM, which need glue, and which HR records are too incomplete to sync. You know exactly what you’re working with.</p></div>
+
+  <p class="k risk">Risks &amp; gotchas</p>
+  <div class="risk-box"><ul>
+    <li>Skipping the Paylocity tier check and discovering mid-project that SCIM isn’t in the contract.</li>
+    <li>Assuming “SSO is set up” means provisioning is set up. SSO (Single Sign-On — logging into many apps with one identity) only handles <em>authentication</em>; SCIM handles <em>account lifecycle</em>. They are separate integrations.</li>
+    <li>Trusting the HR data because “payroll works.” Payroll only needs pay-related fields; identity needs department, title, and manager, which payroll never exercises.</li>
+  </ul></div>
+
+  <p class="codecap">EXAMPLE — read-only census of Okta users by creation source (dummy tenant)</p>
+  <pre><code class="lang-py">import os, requests
+
+BASE = "https://dev-000000.okta.com/api/v1"
+HDRS = {"Authorization": f"SSWS {os.environ['OKTA_API_TOKEN']}"}
+
+counts = {}
+url = f"{BASE}/users?limit=200"
+while url:
+    r = requests.get(url, headers=HDRS)
+    r.raise_for_status()
+    for u in r.json():
+        src = u.get("credentials", {}).get("provider", {}).get("type", "unknown")
+        counts[src] = counts.get(src, 0) + 1
+    url = r.links.get("next", {}).get("url")   # follow pagination
+
+for src, n in sorted(counts.items()):
+    print(f"{src:12} {n}")   # e.g. OKTA 412 (hand-created), IMPORT 96</code></pre>
+
+  <div class="aloud"><p>“Phase zero is a read-only survey: I inventory the HR data, the identity platform, and every downstream app before automating anything, because automation only amplifies whatever data quality you already have.”</p></div>
+</section>
+
+<!-- ================= PHASE 1 ================= -->
+<section id="phase1" aria-labelledby="phase1-h">
+  <div class="phase-head">
+    <span class="chip">P1</span>
+    <div>
+      <h2 id="phase1-h">Phase 1 — Legacy Reconciliation</h2>
+      <p class="tag">Binding years of hand-made accounts to the pipeline without breaking anyone.</p>
+    </div>
+  </div>
+
+  <p class="k">Purpose</p>
+  <p>Most organizations don’t start from zero — they start with hundreds of accounts created by hand over years, with attributes that have drifted or were never filled in. <strong>Reconciliation</strong> (systematically matching records in two systems and resolving the differences, like reconciling a bank statement) binds those existing accounts to their HR records so the pipeline manages them from now on. The goal is captured in one framing: <em>seamless to the end user, staged and deliberate for the operator.</em> No employee should notice anything; the operator should see every single change before it happens.</p>
+
+  <p class="k">Inputs</p>
+  <ul>
+    <li>Phase 0’s user census and data-quality report.</li>
+    <li>An export of active employees from Paylocity with employee ID, email, department, title, and manager.</li>
+    <li>The target attribute schema — the same set of profile fields a brand-new hire would get in Phase 2.</li>
+  </ul>
+
+  <p class="k">Steps</p>
+  <ol>
+    <li><strong>Match, don’t create.</strong> Key each Paylocity record to an existing Okta user on employee ID (preferred, because it never changes) or email (fallback). A matching pass that can’t find a stable key must <em>stop</em>, not create — otherwise the pipeline spawns a duplicate next to the real account, and in most SaaS targets a duplicate email either fails outright or forks the person’s identity in two.</li>
+    <li><strong>Attribute backfill</strong> (filling in missing or stale profile fields on existing accounts from the authoritative source): compute, for every matched user, the delta between their current Okta profile and what Paylocity says it should be — so legacy profiles end up on the exact same schema new hires get.</li>
+    <li><strong>Read-only diff first.</strong> The script’s default mode reports every change it <em>would</em> make — total counts and per-user before/after values — and writes nothing. A human reads that report. Only then is the same script re-run with an explicit apply flag.</li>
+    <li><strong>Exception queue:</strong> accounts with no clean HR source — contractors, service accounts, shared mailboxes — are surfaced into a list and resolved deliberately: by hand, or by writing an explicit exception rule. They are never silently skipped and never guessed at.</li>
+  </ol>
+
+  <p class="k">Outputs</p>
+  <ul>
+    <li>A diff report (kept in Git) showing every proposed change before it was applied.</li>
+    <li>Legacy Okta profiles populated to the same schema as pipeline-born users, each linked to its HR record.</li>
+    <li>A worked-down exception queue with a documented decision per account.</li>
+  </ul>
+
+  <p class="k done">Done when</p>
+  <div class="done-box"><p>A legacy user and a new hire are indistinguishable in Okta — same attribute schema, same HR linkage — and the exception queue is empty or every entry has a documented owner and decision.</p></div>
+
+  <p class="k risk">Risks &amp; gotchas</p>
+  <div class="risk-box"><ul>
+    <li><strong>Duplicate creation</strong> is the classic failure: matching on a sloppy key (display name, or an email that was re-issued to a new hire) creates a second account and splits access history across two identities.</li>
+    <li><strong>Overwriting better data with worse:</strong> sometimes Okta has the correct title and HR is stale. The diff report exists precisely so a human catches this before apply.</li>
+    <li><strong>Service accounts swept into the people pipeline.</strong> A shared mailbox “deactivated because it has no HR record” is a self-inflicted outage. That’s what the exception queue is for.</li>
+  </ul></div>
+
+  <p class="codecap">EXAMPLE — reconciliation diff, dry-run by default, idempotent apply</p>
+  <pre><code class="lang-py">import os, sys, requests
+
+BASE = "https://dev-000000.okta.com/api/v1"
+HDRS = {"Authorization": f"SSWS {os.environ['OKTA_API_TOKEN']}"}
+APPLY = "--apply" in sys.argv          # default is a read-only dry run
+
+def reconcile(hr_row, okta_user):
+    """hr_row: from Paylocity export; okta_user: matched on employeeNumber."""
+    profile = okta_user["profile"]
+    want = {"department": hr_row["department"], "title": hr_row["title"]}
+    delta = {k: v for k, v in want.items() if profile.get(k) != v}
+    if not delta:
+        print(f"[skip]  {profile['login']} already correct")
+        return
+    for k, v in delta.items():
+        print(f"[plan]  {profile['login']}: {k}: {profile.get(k)!r} -> {v!r}")
+    if APPLY:
+        requests.post(f"{BASE}/users/{okta_user['id']}",
+                      headers=HDRS, json={"profile": delta}).raise_for_status()
+        print(f"[done]  {profile['login']}")
+
+# alice@example.com matched on employeeNumber E10042 -> backfill runs
+# svc-scanner@example.com has no HR record -> goes to the exception queue</code></pre>
+
+  <div class="entra"><b>Entra bridge:</b> this is the same discipline as a staged Entra Connect rollout — you review the export of pending changes before enabling sync, and you use soft-match on a stable anchor attribute rather than letting the sync engine create duplicates.</div>
+
+  <div class="aloud"><p>“Legacy reconciliation means binding years of hand-made accounts to the HR feed: match on employee ID so we never create duplicates, backfill attributes from HR, and run everything as a read-only diff a human reviews before a single write happens. When it’s done, a five-year-old account looks exactly like tomorrow’s new hire.”</p></div>
+</section>
+
+<!-- ================= PHASE 2 ================= -->
+<section id="phase2" aria-labelledby="phase2-h">
+  <div class="phase-head">
+    <span class="chip">P2</span>
+    <div>
+      <h2 id="phase2-h">Phase 2 — Joiner Path</h2>
+      <p class="tag">New hire in Paylocity → working accounts everywhere, untouched by hand.</p>
+    </div>
+  </div>
+
+  <p class="k">Purpose</p>
+  <p>Automate day one. When HR completes a hire in Paylocity, the pipeline imports the person into Okta, builds their profile from mapped attributes, places them into groups by rule, assigns apps by group, and provisions accounts downstream over SCIM — no ticket, no checklist, no admin typing a name twice.</p>
+
+  <p class="k">Inputs</p>
+  <ul>
+    <li>The Paylocity → Okta integration from the OIN, enabled and scheduled (this is “Paylocity as a source” — the same role HR-driven provisioning plays in Entra).</li>
+    <li>A reviewed <strong>attribute-mapping table</strong> (below) — the contract between HR’s schema and identity’s schema.</li>
+    <li>Group rules and group-to-app assignments, created in advance and tested against seeded accounts.</li>
+  </ul>
+
+  <p class="k">Steps</p>
+  <ol>
+    <li>HR completes the hire in Paylocity with all required fields.</li>
+    <li>Okta’s scheduled import picks up the new record and creates the user via <strong>attribute mapping</strong> (per-field rules that translate a source system’s fields into the identity platform’s fields — Entra calls these attribute mappings too, in provisioning configuration).</li>
+    <li><strong>Group rules</strong> evaluate the new profile — e.g. <code>user.department == "Engineering"</code> — and add the user to groups automatically. Nobody hand-picks groups.</li>
+    <li>Group membership triggers <strong>app assignments</strong>; each app’s provisioning integration then creates the downstream account over SCIM (or the app’s API — see the app notes below).</li>
+    <li>An Okta Workflows flow resolves the <strong>manager attribute</strong> — see the deep-dive below, because Paylocity does not hand you a usable manager value.</li>
+  </ol>
+
+  <p class="k">Outputs</p>
+  <ul>
+    <li>An activated Okta user with a complete, HR-sourced profile.</li>
+    <li>Accounts in Google Workspace, Atlassian, Zscaler, and 1Password, created by the pipeline.</li>
+    <li>System Log entries documenting every step — the audit trail is a by-product, not extra work.</li>
+  </ul>
+
+  <p class="k">The attribute-mapping table — the load-bearing artifact</p>
+  <p>Paylocity’s schema is HR-centric: cost centers, pay groups, EEO codes — fields built for payroll and compliance reporting. Okta’s schema is identity-centric: login, department, title, manager — fields that drive access. The mapping table is where one worldview is translated into the other, and it deserves the most review of anything in this phase, because <strong>bad mapping = wrong access</strong>. If Paylocity’s cost-center code is mapped into <code>department</code>, the group rules downstream will happily grant the wrong apps to the wrong people, at scale, with perfect reliability.</p>
+  <div class="tblwrap">
+  <table>
+    <thead><tr><th>Paylocity field (HR-centric)</th><th>Okta attribute (identity-centric)</th><th>Transform / note</th></tr></thead>
+    <tbody>
+      <tr><td><code>employeeId</code></td><td><code>employeeNumber</code></td><td>Stable match key. Never reused, never changes.</td></tr>
+      <tr><td><code>workEmail</code></td><td><code>login</code>, <code>email</code></td><td>Watch Paylocity username length limits — long emails can be truncated and break the email-as-username convention.</td></tr>
+      <tr><td><code>legalFirstName</code> / <code>preferredFirstName</code></td><td><code>firstName</code></td><td>Prefer preferred name when present: <code>preferred || legal</code>.</td></tr>
+      <tr><td><code>departmentDescription</code></td><td><code>department</code></td><td>The human-readable label, <em>not</em> the cost-center code. Group rules key on this.</td></tr>
+      <tr><td><code>jobTitle</code></td><td><code>title</code></td><td>Direct copy.</td></tr>
+      <tr><td><code>supervisorEmployeeId</code></td><td><code>manager</code> (resolved)</td><td>Arrives as a Paylocity-internal ID — must be resolved by a Workflows flow; see below.</td></tr>
+      <tr><td><code>costCenter1</code></td><td><code>costCenter</code></td><td>Kept for reporting; never used in access rules.</td></tr>
+      <tr><td><code>hireDate</code></td><td><code>startDate</code> (custom)</td><td>Drives pre-hire timing and “new since” reporting.</td></tr>
+    </tbody>
+  </table>
+  </div>
+
+  <details>
+    <summary>Deep dive: the manager-attribute problem (and the Workflows fix)</summary>
+    <div>
+      <p>Paylocity passes the manager as an external ID unique to Paylocity — an opaque internal number, not an email or a reference Okta can resolve to another user. Left alone, the <code>manager</code> field is useless. The fix pattern is an Okta Workflows flow that: (1) lists Paylocity-assigned users, (2) matches each user’s external manager ID against the other users’ own external IDs, and (3) writes the resolved manager (their Okta login) back onto the user’s profile.</p>
+      <p>Why bother? Manager data drives <strong>access-approval routing</strong> (who approves this person’s request for an app) and <strong>access-certification campaigns</strong> (periodic “does this person still need this?” reviews that auditors require — Entra calls these access reviews). A blank manager field silently breaks both.</p>
+    </div>
+  </details>
+
+  <p class="k done">Done when</p>
+  <div class="done-box"><p>A test hire entered only in Paylocity results — with zero human touches — in an Okta account with correct attributes, correct group memberships, a resolved manager, and working downstream accounts, all within one import cycle.</p></div>
+
+  <p class="k risk">Risks &amp; gotchas</p>
+  <div class="risk-box"><ul>
+    <li><strong>Silent non-provisioning:</strong> an incomplete Paylocity HR record can simply never sync, with no error raised. Pair the pipeline with a scheduled report comparing HR headcount to Okta headcount.</li>
+    <li><strong>Mapping drift:</strong> HR renames a department, and every group rule keyed on the old string stops matching. Treat department values as a controlled vocabulary shared between HR and IT.</li>
+    <li><strong>Rules that only add:</strong> a group rule places users in; make sure the same rule set is what keeps them there, so a later attribute change moves them (Phase 3) instead of accumulating.</li>
+  </ul></div>
+
+  <p class="codecap">EXAMPLE — group rule (concept) and what SCIM sends downstream</p>
+  <pre><code class="lang-py"># Group rule (Okta expression language), maintained in Git:
+#   IF   user.department == "Engineering"
+#   THEN assign to groups: eng-all, vpn-eng, atlassian-users
+# ≈ an Entra dynamic group with rule (user.department -eq "Engineering")
+
+# When group membership assigns an app, Okta sends the SCIM create:
+scim_create = {
+    "schemas": ["urn:ietf:params:scim:schemas:core:2.0:User"],
+    "userName": "alice@example.com",
+    "name": {"givenName": "Alice", "familyName": "Nguyen"},
+    "emails": [{"value": "alice@example.com", "primary": True}],
+    "active": True,
+    "externalId": "E10042",     # the stable key — duplicate prevention
+}
+# POST {app}/scim/v2/Users -> 201 Created (or 409 if the key already exists:
+# match, don't create — bind to the existing account instead)</code></pre>
+
+  <p class="k">Downstream app notes</p>
+  <ul>
+    <li><strong>Google Workspace</strong> is a downstream app here — Okta is the master. Okta’s connector drives Google’s Admin SDK Directory API under the hood, even though the lifecycle model in Okta looks like SCIM. Don’t blur <strong>Google Workspace</strong> with <strong>GCP</strong>: different products sharing an identity backbone. Okta → Cloud Identity → GCP IAM is a separate federation chain for cloud-console access.</li>
+    <li><strong>Atlassian</strong> requires <strong>Atlassian Guard</strong> (their paid identity add-on, formerly Atlassian Access) before SAML or SCIM works at all — budget for it in Phase 0.</li>
+    <li><strong>Zscaler</strong> consumes Okta groups via SCIM, so network access policy binds to group membership rather than IP ranges — a department change re-scopes network access automatically.</li>
+    <li><strong>1Password</strong> can’t accept SCIM directly (its end-to-end encryption model prevents the vendor’s cloud from processing provisioning data), so a self-hosted <strong>1Password SCIM Bridge</strong> container runs on GCP — Cloud Run or GKE — between Okta and 1Password. This is GCP’s whole role in the pipeline: middleware hosting, not a provisioning target.</li>
+    <li><strong>Jamf Connect</strong> binds macOS login to Okta credentials, so local laptop accounts don’t drift from the identity platform (same goal as Entra hybrid join keeping Windows logins tied to the directory).</li>
+  </ul>
+
+  <div class="aloud"><p>“The joiner path means HR enters a hire once, and the pipeline does the rest: import into Okta, attributes drive group rules, groups drive app assignments, and SCIM creates the downstream accounts. The attribute-mapping table is the artifact I’d review hardest — bad mapping is wrong access at scale.”</p></div>
+</section>
+
+<!-- ================= PHASE 3 ================= -->
+<section id="phase3" aria-labelledby="phase3-h">
+  <div class="phase-head">
+    <span class="chip">P3</span>
+    <div>
+      <h2 id="phase3-h">Phase 3 — Mover Path</h2>
+      <p class="tag">Transfers and role changes — where most pipelines silently fail.</p>
+    </div>
+  </div>
+
+  <p class="k">Purpose</p>
+  <p>Handle the middle of the lifecycle: transfers, promotions, department changes. The rule is unforgiving: <strong>a department change must grant new access AND revoke old access.</strong> Half of that is easy; the other half is where pipelines rot.</p>
+
+  <p>Say it explicitly: <strong>movers are where most identity pipelines silently fail.</strong> Half-built pipelines handle hire and termination only. When someone transfers, the new team requests their new access by ticket, nobody thinks to remove the old, and the person accumulates entitlements with every move. Orphaned access from an old role is a textbook audit finding — the ten-year employee who has moved four times and can still touch the finance share, the prod console, and the old team’s admin panel.</p>
+
+  <p class="k">Inputs</p>
+  <ul>
+    <li>The department/title change recorded in Paylocity (the mover “event” is just an attribute change on the next import — there is no separate transfer API).</li>
+    <li>Group rules written as <em>complete</em> descriptions of who belongs, so a rule that adds Engineering members also, by ceasing to match, removes ex-Engineering members.</li>
+    <li>SCIM provisioning configured for update and deprovision, not just create.</li>
+  </ul>
+
+  <p class="k">Steps</p>
+  <ol>
+    <li>HR updates the employee’s department in Paylocity.</li>
+    <li>The next Okta import updates the user’s profile attribute.</li>
+    <li>Group rules re-evaluate: the user <em>enters</em> the new department’s groups and <em>leaves</em> the old ones — the leave is automatic only because membership is rule-derived rather than hand-granted.</li>
+    <li>App assignments follow group membership: new apps are provisioned via SCIM; apps granted only through the old groups are deprovisioned.</li>
+    <li>Apps shared by both roles receive a SCIM <em>update</em> (new department, new groups) rather than a churn of delete-and-recreate.</li>
+    <li>Zscaler policy re-scopes automatically, since its policy binds to the Okta groups that just changed.</li>
+  </ol>
+
+  <p class="k">Outputs</p>
+  <ul>
+    <li>Access that matches the new role — additions <em>and</em> removals — within one import cycle.</li>
+    <li>System Log evidence of both halves, which is exactly what an access review wants to see.</li>
+  </ul>
+
+  <p class="k done">Done when</p>
+  <div class="done-box"><p>A test transfer (change one seeded user’s department in Paylocity) produces both grants and revocations with no human involvement — and you can point to the revocations in the log, not just the grants.</p></div>
+
+  <p class="k risk">Risks &amp; gotchas</p>
+  <div class="risk-box"><ul>
+    <li><strong>Hand-granted extras survive moves.</strong> Rules only remove what rules granted. Access granted directly to a user outside the group model is invisible to the mover path — which is the argument for allowing direct assignment only as a logged exception.</li>
+    <li><strong>Data loss on revoke:</strong> leaving a team can remove the app that holds their old files. Decide the retention pattern per app (e.g., Google Workspace content transfer) before the first real mover, not during.</li>
+    <li><strong>Timing gaps:</strong> HR often keys transfers to a future effective date; make sure the import honors it rather than moving access weeks early.</li>
+  </ul></div>
+
+  <p class="codecap">EXAMPLE — verifying a mover produced revocations, not just grants (dry-run pattern)</p>
+  <pre><code class="lang-py">import os, sys, requests
+
+BASE = "https://dev-000000.okta.com/api/v1"
+HDRS = {"Authorization": f"SSWS {os.environ['OKTA_API_TOKEN']}"}
+APPLY = "--apply" in sys.argv
+
+def mover_check(user_id, old_dept_groups, new_dept_groups):
+    r = requests.get(f"{BASE}/users/{user_id}/groups", headers=HDRS)
+    r.raise_for_status()
+    current = {g["profile"]["name"] for g in r.json()}
+    to_gain  = new_dept_groups - current
+    to_lose  = old_dept_groups & current
+    for g in sorted(to_gain):
+        print(f"[plan]  GRANT  {g}")
+    for g in sorted(to_lose):
+        print(f"[plan]  REVOKE {g}   # the half everyone forgets")
+    if not APPLY:
+        print("[dry-run] no changes made; re-run with --apply")
+
+mover_check("00u000000000000000a0",
+            old_dept_groups={"eng-all", "vpn-eng"},
+            new_dept_groups={"sales-all", "crm-users"})</code></pre>
+
+  <div class="entra"><b>Entra bridge:</b> identical logic to dynamic-group membership changing when a user attribute changes — the difference is discipline, not technology. If access is granted only via rule-derived groups, moves are symmetric. Every direct assignment is a future audit finding.</div>
+
+  <div class="aloud"><p>“Movers are the test of whether a lifecycle pipeline is real: a department change has to revoke the old access, not just grant the new. Most half-built pipelines only handle hire and fire, and the leftover access from old roles is exactly what auditors find.”</p></div>
+</section>
+
+<!-- ================= PHASE 4 ================= -->
+<section id="phase4" aria-labelledby="phase4-h">
+  <div class="phase-head">
+    <span class="chip">P4</span>
+    <div>
+      <h2 id="phase4-h">Phase 4 — Leaver Path</h2>
+      <p class="tag">One action in HR → complete access removal in minutes, with evidence.</p>
+    </div>
+  </div>
+
+  <p class="k">Purpose</p>
+  <p>Make termination a single action with total, provable reach: HR terminates the person in Paylocity, and the pipeline deactivates the identity, cuts access to every downstream app, and locks the hardware — in minutes, with timestamps.</p>
+
+  <p class="k">Inputs</p>
+  <ul>
+    <li>The termination recorded in Paylocity (with attention to the effective date and, for urgent departures, an out-of-band fast path — see gotchas).</li>
+    <li>Okta provisioning set to deactivate on source removal; SCIM deprovisioning enabled per app.</li>
+    <li>Jamf API access for device actions, keyed by the same user identity.</li>
+  </ul>
+
+  <p class="k">Steps</p>
+  <ol>
+    <li>HR terminates the employee in Paylocity.</li>
+    <li>Okta’s import sees the person leave the source and <strong>deactivates</strong> the Okta user: sessions are killed, sign-in is blocked, and every SSO-connected app is unreachable at the front door immediately.</li>
+    <li><strong>Deprovisioning</strong> (the automated removal of access — the reverse of provisioning) fans out over SCIM: each downstream app receives an update setting <code>active: false</code>. Note carefully: this <em>suspends</em> the account rather than sending a DELETE. The object survives, which preserves audit evidence (who had access, when, what did they own) and makes rehires a reactivation instead of a rebuild.</li>
+    <li>Device action via MDM: a Jamf lock (or wipe, per policy) hits the person’s laptop, closing the gap SSO can’t reach — cached local sessions and offline data.</li>
+    <li>The run is verified against the Okta System Log (Okta’s unified event stream — the equivalent of Entra’s audit + sign-in logs), and those events flow to the SIEM (Security Information and Event Management — the central log platform, e.g. Splunk-class tooling) as durable audit evidence.</li>
+  </ol>
+
+  <p class="k">Outputs</p>
+  <ul>
+    <li>A deactivated (not deleted) identity and suspended downstream accounts.</li>
+    <li>A locked or wiped device.</li>
+    <li>A timestamped trail from HR action to every downstream effect.</li>
+  </ul>
+
+  <p class="k done">Done when</p>
+  <div class="done-box"><p>A test termination of a seeded account results, within minutes and with no human touches, in: no Okta sign-in, suspended accounts in every downstream app, a locked test device, and System Log entries for each step. One action in the HR system, complete access removal in minutes, with a timestamped audit trail.</p></div>
+
+  <p class="k risk">Risks &amp; gotchas</p>
+  <div class="risk-box"><ul>
+    <li><strong>Import lag vs. urgent terminations:</strong> a scheduled HR import may run hourly or daily. For for-cause departures, have a documented fast path (suspend directly in Okta first; let the HR event reconcile behind it).</li>
+    <li><strong>The apps outside the pipeline</strong> are the leaver path’s blind spot — anything classified “manual-only” in Phase 0 needs a human checklist triggered by the same event.</li>
+    <li><strong>Deletion habits from on-prem:</strong> resist the urge to delete-after-30-days by reflex. Suspended objects are your evidence in an investigation and your shortcut in a rehire; deletion is a separate, deliberate retention decision.</li>
+  </ul></div>
+
+  <p class="codecap">EXAMPLE — what SCIM deprovisioning actually sends (suspend, not delete)</p>
+  <pre><code class="lang-py">import os, sys, requests
+
+APPLY = "--apply" in sys.argv
+app_base = "https://scim.example.com/scim/v2"   # a downstream app's SCIM endpoint
+HDRS = {"Authorization": f"Bearer {os.environ['SCIM_BEARER_TOKEN']}"}
+
+def deprovision(scim_user_id, login):
+    patch = {
+        "schemas": ["urn:ietf:params:scim:api:messages:2.0:PatchOp"],
+        "Operations": [{"op": "replace", "path": "active", "value": False}],
+    }   # active:false = suspend. NOT a DELETE — the object stays for audit/rehire.
+    if not APPLY:
+        print(f"[dry-run] would suspend {login} ({scim_user_id})")
+        return
+    r = requests.patch(f"{app_base}/Users/{scim_user_id}", headers=HDRS, json=patch)
+    r.raise_for_status()
+    print(f"[done] suspended {login}")
+
+deprovision("2819c223-7f76-453a-919d-413861904646", "bob@example.com")</code></pre>
+
+  <div class="aloud"><p>“The leaver path is the security payoff: HR terminates someone once, and within minutes Okta kills their sessions, SCIM suspends every downstream account — suspend, not delete, so the audit trail survives — and the MDM locks the laptop. One action, complete removal, timestamped evidence.”</p></div>
+</section>
+
+<!-- ================= SAFETY MODEL ================= -->
+<section id="safety" aria-labelledby="safety-h">
+  <div class="phase-head">
+    <span class="chip sf">SFT</span>
+    <div>
+      <h2 id="safety-h">Safety Model</h2>
+      <p class="tag">Cross-cutting rules that apply to every phase and every script.</p>
+    </div>
+  </div>
+
+  <p>Identity automation is a lever that moves hundreds of accounts at once, so every write path in this pipeline obeys the same six rules. None of them are optional, and none are phase-specific.</p>
+
+  <h3>1. Dry-run by default</h3>
+  <p>Every script prints its plan and changes nothing unless explicitly told otherwise: <code>--dry-run</code> is the default behavior, <code>--apply</code> is the explicit opt-in. Every write-path example on this page shows the pattern. A tool whose default is “do it” will eventually be run by accident; a tool whose default is “show me” cannot be.</p>
+
+  <h3>2. Blast-radius caps</h3>
+  <p><strong>Blast radius</strong> (the number of users or systems a single run can affect — the damage limit if something is wrong) is capped in code: if a run would touch more than N users, it halts and requires human confirmation. A reconciliation script that suddenly plans 400 changes when yesterday it planned 12 isn’t more productive — it’s telling you an upstream assumption broke.</p>
+  <pre><code class="lang-py">MAX_TOUCHED = 25    # blast-radius cap
+
+planned = build_plan(hr_export, okta_users)   # list of intended changes
+if len(planned) &gt; MAX_TOUCHED and not "--confirm-large-run" in sys.argv:
+    print(f"[halt] plan touches {len(planned)} users (cap {MAX_TOUCHED}).")
+    print("[halt] review the plan, then re-run with --confirm-large-run")
+    sys.exit(1)</code></pre>
+
+  <h3>3. Pilot small</h3>
+  <p>Every phase is proven on one department — or a set of seeded test accounts (deliberately created fake users like <code>alice@example.com</code> that exist to exercise the pipeline) — before going org-wide. The pilot population is where mapping mistakes and rule typos surface cheaply.</p>
+
+  <h3>4. Deactivate, never delete</h3>
+  <p>Deactivation is reversible and preserves evidence; deletion is neither. The pipeline suspends (<code>active: false</code>), and deletion happens later, if ever, as a separate deliberate retention decision — never as an automated side effect.</p>
+
+  <h3>5. Observability</h3>
+  <p>The Okta System Log is open during every applied run — you watch the events land as the script reports them, and mismatches stop the run. The same events feed the SIEM, which turns operational logging into audit evidence with zero extra effort. (Entra bridge: this is your habit of watching the audit log during a risky change, made mandatory.)</p>
+
+  <h3>6. Everything in Git</h3>
+  <p>Scripts, mapping tables, group-rule definitions, and dry-run reports all live in a repository: diffable (you can see exactly what changed between runs), reviewable (a second person approves before apply), and revertible (yesterday’s known-good config is one checkout away). Configuration that lives only in an admin console has none of those properties.</p>
+
+  <div class="aloud"><p>“Every write in this pipeline is dry-run by default, capped in blast radius, piloted small, and logged to the System Log and SIEM — and it suspends rather than deletes, with every script and mapping table in Git so changes are reviewed and revertible.”</p></div>
+</section>
+
+<!-- ================= GLOSSARY ================= -->
+<section id="glossary" aria-labelledby="glossary-h">
+  <div class="phase-head">
+    <span class="chip gl">GLS</span>
+    <div>
+      <h2 id="glossary-h">Glossary</h2>
+      <p class="tag">Every term defined inline above, repeated here for lookup. Entra ID equivalents in mono.</p>
+    </div>
+  </div>
+
+  <dl class="gloss">
+    <dt>Attribute backfill</dt>
+    <dd>Filling in missing or stale profile fields on existing accounts from the authoritative source, so legacy users match the schema new hires get.</dd>
+    <dt>Blast radius</dt>
+    <dd>How many users or systems one run can affect — capped in code so a bad run halts instead of scaling.</dd>
+    <dt>Deprovisioning <span class="ee">≈ Entra: account removal on deprovision</span></dt>
+    <dd>The automated removal of access when someone leaves or changes role — the reverse of provisioning; here it suspends rather than deletes.</dd>
+    <dt>Dry run</dt>
+    <dd>Running a script in report-only mode: it prints every change it would make and makes none. The default mode of every write path here.</dd>
+    <dt>Group rule <span class="ee">≈ Entra: dynamic group</span></dt>
+    <dd>A saved expression in Okta that reads profile attributes (like department) and places users into groups automatically.</dd>
+    <dt>HRIS</dt>
+    <dd>Human Resources Information System — the HR database (here, Paylocity) where people are hired, transferred, and terminated.</dd>
+    <dt>IAM</dt>
+    <dd>Identity and Access Management — the whole discipline of controlling who someone is and what they can reach.</dd>
+    <dt>Idempotent</dt>
+    <dd>Safe to run twice: an idempotent script skips what already exists (<code>[skip]</code>) instead of duplicating or erroring, so reruns are harmless.</dd>
+    <dt>IdP <span class="ee">≈ Entra ID itself</span></dt>
+    <dd>Identity Provider — the central platform that owns logins and vouches for users to other apps. Here, Okta.</dd>
+    <dt>JIT provisioning</dt>
+    <dd>Just-In-Time provisioning — creating an app account at the moment of first login (via SAML/OIDC) instead of ahead of time via SCIM. Convenient, but it can’t deactivate anyone — which is why this pipeline prefers SCIM.</dd>
+    <dt>MDM <span class="ee">≈ Intune</span></dt>
+    <dd>Mobile Device Management — remote management of laptops and phones (here, Jamf for Apple devices), including lock and wipe.</dd>
+    <dt>OAuth 2.0</dt>
+    <dd>The authorization framework that lets one service act on another’s API with scoped tokens instead of passwords; OIDC and most SCIM auth ride on it.</dd>
+    <dt>OIDC <span class="ee">≈ Entra: OpenID Connect apps</span></dt>
+    <dd>OpenID Connect — the modern, JSON/REST login protocol built on OAuth 2.0; the newer alternative to SAML for SSO.</dd>
+    <dt>RBAC</dt>
+    <dd>Role-Based Access Control — granting access by role/group membership instead of per person. This pipeline’s chain: attributes → group rules → groups → app assignments → SCIM.</dd>
+    <dt>Reconciliation</dt>
+    <dd>Systematically matching records across two systems (HR ↔ identity) and resolving differences — matching, never blind creation.</dd>
+    <dt>SAML <span class="ee">≈ Entra: SAML enterprise apps</span></dt>
+    <dd>Security Assertion Markup Language — the older, XML-based SSO protocol most enterprise apps support.</dd>
+    <dt>SCIM <span class="ee">≈ Entra: automatic provisioning</span></dt>
+    <dd>System for Cross-domain Identity Management — the open REST standard for automatically creating, updating, and deactivating user accounts in other apps.</dd>
+    <dt>SCIM bridge</dt>
+    <dd>A small translation service between an identity platform and an app that can’t accept SCIM directly — here, 1Password’s self-hosted bridge container running on GCP.</dd>
+    <dt>SSO <span class="ee">≈ Entra: seamless/enterprise SSO</span></dt>
+    <dd>Single Sign-On — logging into many apps with one identity. Handles authentication only; account lifecycle is SCIM’s job.</dd>
+    <dt>System of record</dt>
+    <dd>The one authoritative source for a piece of data — here Paylocity for people. Everything else copies from it, never into it.</dd>
+  </dl>
+</section>
+
+<!-- ================= SOURCES ================= -->
+<section id="sources" aria-labelledby="sources-h">
+  <div class="phase-head">
+    <span class="chip gl">SRC</span>
+    <div>
+      <h2 id="sources-h">Sources</h2>
+      <p class="tag">Primary documentation for every load-bearing claim on this page.</p>
+    </div>
+  </div>
+
+  <ul class="src">
+    <li><a href="https://developer.okta.com/docs/concepts/scim/" rel="noopener">Okta developer docs — SCIM concepts</a>
+      <span class="why">What SCIM is and how Okta implements provisioning against it.</span></li>
+    <li><a href="https://developer.okta.com/docs/reference/api/users/" rel="noopener">Okta developer docs — Users API</a>
+      <span class="why">Profile reads/updates and lifecycle operations (deactivate) used in the examples.</span></li>
+    <li><a href="https://developer.okta.com/docs/reference/api/groups/" rel="noopener">Okta developer docs — Groups API (incl. group rules)</a>
+      <span class="why">Group and group-rule operations behind the attributes → groups chain.</span></li>
+    <li><a href="https://help.okta.com/wf/en-us/" rel="noopener">Okta Workflows documentation</a>
+      <span class="why">The no-code automation product used for the manager-resolution flow.</span></li>
+    <li><a href="https://www.okta.com/integrations/paylocity/" rel="noopener">Okta Integration Network — Paylocity</a>
+      <span class="why">The catalog listing for the Paylocity ↔ Okta integration.</span></li>
+    <li><a href="https://www.paylocity.com/" rel="noopener">Paylocity — product site</a>
+      <span class="why">Landing page for Paylocity’s integration and marketplace documentation (tier details are contract-specific — confirm with your rep).</span></li>
+    <li><a href="https://www.atlassian.com/software/guard" rel="noopener">Atlassian Guard</a>
+      <span class="why">The add-on Atlassian requires for SAML SSO and SCIM provisioning.</span></li>
+    <li><a href="https://help.zscaler.com/" rel="noopener">Zscaler help portal</a>
+      <span class="why">Okta SAML/SCIM integration guides for binding Zscaler policy to identity groups.</span></li>
+    <li><a href="https://support.1password.com/scim/" rel="noopener">1Password SCIM Bridge documentation</a>
+      <span class="why">Why 1Password requires a self-hosted bridge and how to deploy it.</span></li>
+    <li><a href="https://developers.google.com/admin-sdk/directory" rel="noopener">Google Admin SDK Directory API</a>
+      <span class="why">The API Okta’s Google Workspace connector drives under the hood.</span></li>
+    <li><a href="https://www.jamf.com/products/jamf-connect/" rel="noopener">Jamf Connect</a>
+      <span class="why">Binding macOS local login to cloud identity credentials.</span></li>
+    <li><a href="https://csrc.nist.gov/pubs/sp/800/207/final" rel="noopener">NIST SP 800-207 — Zero Trust Architecture</a>
+      <span class="why">The framework behind identity-bound (rather than network-bound) access policy.</span></li>
+  </ul>
+</section>
+
+<footer>
+  <p>Generic reference architecture for a mid-size SaaS company. All names, tenants, and tokens on this page are dummy values (<code>alice@example.com</code>, <code>dev-000000.okta.com</code>, <code>${OKTA_API_TOKEN}</code>). Single static file — no build step, no trackers, no external dependencies.</p>
+</footer>
+
+</main>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  /* ---- mobile menu ---- */
+  var btn = document.getElementById("menuBtn");
+  var menu = document.getElementById("mobileMenu");
+  if (btn && menu) {
+    btn.addEventListener("click", function(){
+      var open = menu.classList.toggle("open");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    menu.addEventListener("click", function(e){
+      if (e.target.closest("a")) { menu.classList.remove("open"); btn.setAttribute("aria-expanded","false"); }
+    });
+  }
+
+  /* ---- scroll-spy ---- */
+  var links = Array.prototype.slice.call(document.querySelectorAll("nav.side a.navlink"));
+  var byId = {};
+  links.forEach(function(a){ byId[a.getAttribute("href").slice(1)] = a; });
+  var sections = Array.prototype.slice.call(document.querySelectorAll("main section[id]"));
+  if ("IntersectionObserver" in window) {
+    var current = null;
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){
+        if (en.isIntersecting) {
+          current = en.target.id;
+          links.forEach(function(a){ a.classList.remove("active"); });
+          if (byId[current]) byId[current].classList.add("active");
+        }
+      });
+    }, { rootMargin: "-20% 0px -70% 0px" });
+    sections.forEach(function(s){ io.observe(s); });
+  }
+
+  /* ---- tiny syntax highlighter (no external dependency) ---- */
+  var KW = /\b(def|return|if|elif|else|for|while|in|not|and|or|import|from|as|with|True|False|None|lambda|raise|try|except|print)\b/;
+  function esc(s){
+    return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
+  }
+  document.querySelectorAll("pre code").forEach(function(block){
+    var src = block.textContent, out = "", last = 0, m;
+    var rx = new RegExp(
+      "(#[^\\n]*)|(\"(?:[^\"\\\\\\n]|\\\\.)*\"|'(?:[^'\\\\\\n]|\\\\.)*')|" + KW.source + "|(--[a-z][a-z-]+)", "g");
+    while ((m = rx.exec(src)) !== null) {
+      out += esc(src.slice(last, m.index));
+      var t = m[0];
+      if (m[1]) out += '<span class="tok-c">' + esc(t) + "</span>";
+      else if (m[2]) out += '<span class="tok-s">' + esc(t) + "</span>";
+      else if (m[3]) out += '<span class="tok-k">' + esc(t) + "</span>";
+      else out += '<span class="tok-f">' + esc(t) + "</span>";
+      last = m.index + t.length;
+    }
+    out += esc(src.slice(last));
+    block.innerHTML = out;
+  });
+})();
+</script>
+</body>
+</html>
